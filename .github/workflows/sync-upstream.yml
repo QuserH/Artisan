@@ -1,0 +1,159 @@
+name: sync-upstream
+
+# 每日同步 PunishXIV/Artisan，合并、升版本、构建发布并更新 zh-repo。
+# 冲突策略：上游改动撞到本地化/功能代码时直接失败停下，不自动覆盖。
+
+on:
+  schedule:
+    - cron: "37 19 * * *"   # UTC 19:37 = 北京时间 03:37
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: PunishXIV/Artisan
+  UPSTREAM_BRANCH: main
+  TARGET_BRANCH: ZH
+  PLUGIN_REPO: QuserH/zh-repo
+
+jobs:
+  sync-and-release:
+    runs-on: windows-latest
+    env:
+      HAS_ZH_REPO_TOKEN: ${{ secrets.ZH_REPO_TOKEN != '' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Configure Git
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        shell: pwsh
+        run: |
+          $refspec = "${env:UPSTREAM_BRANCH}:refs/remotes/upstream/${env:UPSTREAM_BRANCH}"
+          git fetch "https://github.com/$env:UPSTREAM_REPO.git" $refspec
+          $count = git rev-list --count "HEAD..upstream/$env:UPSTREAM_BRANCH"
+          Write-Output "Upstream commits pending: $count"
+          if ($count -eq "0") { "UPSTREAM_CHANGED=false" | Out-File -FilePath $env:GITHUB_ENV -Append }
+          else { "UPSTREAM_CHANGED=true" | Out-File -FilePath $env:GITHUB_ENV -Append }
+
+      - name: Merge upstream and bump version
+        if: env.UPSTREAM_CHANGED == 'true'
+        shell: pwsh
+        run: |
+          git merge "upstream/$env:UPSTREAM_BRANCH" --no-edit
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::group::Conflicted files"
+            git diff --name-only --diff-filter=U
+            Write-Output "::endgroup::"
+            git merge --abort
+            Write-Output "::error::Upstream merge produced conflicts. Stopped on purpose; resolve locally, rebuild and push."
+            exit 1
+          }
+
+          $projectPath = "Artisan/Artisan.csproj"
+          $project = Get-Content $projectPath -Raw -Encoding utf8
+          $current = [regex]::Match($project, '<Version>([^<]+)</Version>').Groups[1].Value
+          $parts = $current.Split('.')
+          $parts[-1] = ([int]$parts[-1] + 1).ToString()
+          $newVersion = $parts -join '.'
+          "NEW_VERSION=$newVersion" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+          $project = [regex]::Replace($project, '<Version>[^<]+</Version>', "<Version>$newVersion</Version>", 1)
+          Set-Content $projectPath -Value $project -Encoding utf8 -NoNewline
+
+          $manifestPath = "Artisan/Artisan.json"
+          $manifest = Get-Content $manifestPath -Raw -Encoding utf8
+          $manifest = [regex]::Replace($manifest, '"AssemblyVersion": "[^"]+"', "`"AssemblyVersion`": `"$newVersion`"", 1)
+          $manifest = [regex]::Replace($manifest, 'releases/download/v[^/]+/Artisan\.zip', "releases/download/v$newVersion/Artisan.zip")
+          Set-Content $manifestPath -Value $manifest -Encoding utf8 -NoNewline
+
+          git add Artisan/Artisan.csproj Artisan/Artisan.json
+          git commit -m "chore: sync upstream and bump to $newVersion"
+          git push origin "HEAD:$env:TARGET_BRANCH"
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error::git push failed."; exit 1 }
+
+      - name: Decide whether to build
+        shell: pwsh
+        run: |
+          $shouldBuild = "${{ github.event_name }}" -eq "workflow_dispatch" -or $env:UPSTREAM_CHANGED -eq "true"
+          "SHOULD_BUILD=$($shouldBuild.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Setup .NET
+        if: env.SHOULD_BUILD == 'true'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Download CN Dalamud
+        if: env.SHOULD_BUILD == 'true'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://github.com/Dalamud-DailyRoutines/Dalamud/releases/latest/download/latest.7z -OutFile latest.7z
+          $sevenZip = "$env:ProgramFiles\7-Zip\7z.exe"
+          if (!(Test-Path $sevenZip)) { $sevenZip = "7z" }
+          foreach ($path in @("$env:AppData\XIVLauncher\addon\Hooks\dev", "$env:AppData\XIVLauncherCN\addon\Hooks\dev")) {
+            New-Item -ItemType Directory -Force -Path $path | Out-Null
+            & $sevenZip x latest.7z "-o$path" -y
+          }
+          Remove-Item latest.7z -Force
+
+      - name: Build
+        if: env.SHOULD_BUILD == 'true'
+        shell: pwsh
+        run: |
+          dotnet build Artisan/Artisan.csproj -c Release -v minimal
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error::Build failed."; exit 1 }
+
+      - name: Read version
+        if: env.SHOULD_BUILD == 'true'
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path "Artisan/Artisan.csproj" -Pattern '<Version>(.*?)</Version>').Matches[0].Groups[1].Value
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Create or update release
+        if: env.SHOULD_BUILD == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v$env:VERSION"
+          Copy-Item "Artisan/bin/Release/Artisan/latest.zip" "Artisan.zip" -Force
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -eq 0) { gh release upload $tag "Artisan.zip" --clobber }
+          else { gh release create $tag "Artisan.zip" --title "Artisan $env:VERSION" --notes "Built from the localized source after upstream synchronization." }
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error::Release upload failed."; exit 1 }
+
+      - name: Notify zh-repo
+        if: env.SHOULD_BUILD == 'true' && env.HAS_ZH_REPO_TOKEN == 'true'
+        shell: pwsh
+        env:
+          ZH_REPO_TOKEN: ${{ secrets.ZH_REPO_TOKEN }}
+        run: |
+          $body = @{
+            event_type = "publish-plugin"
+            client_payload = @{
+              internal_name = "Artisan"
+              version = $env:VERSION
+              download_url = "https://github.com/${{ github.repository }}/releases/download/v$env:VERSION/Artisan.zip"
+              repo_url = "https://github.com/${{ github.repository }}"
+            }
+          } | ConvertTo-Json -Depth 5
+          $r = Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$env:PLUGIN_REPO/dispatches" -Headers @{ Authorization = "Bearer $env:ZH_REPO_TOKEN"; Accept = "application/vnd.github+json" } -Body $body -ContentType "application/json"
+          Write-Output "zh-repo dispatch sent."

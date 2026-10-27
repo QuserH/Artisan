@@ -336,51 +336,59 @@ namespace Artisan.IPC
 
         public static void RestockFromRetainers(uint ItemId, int howManyToGet)
         {
-            if (RetainerData.SelectMany(x => x.Value).Any(x => x.Value.ItemId == ItemId && x.Value.Quantity > 0))
+            if (howManyToGet <= 0)
             {
-                TM.Enqueue(() => Svc.Framework.Update += Tick);
-                TM.Enqueue(() => AutoRetainerIPC.Suppress());
-                TM.EnqueueBell();
-                TM.DelayNext("BellInteracted", 200);
-
-                var retainerListSorted = RetainerData.Where(x => x.Value.Values.Any(y => y.ItemId == ItemId && y.HQQuantity > 0)).ToDictionary(x => x.Key, x => x.Value);
-                RetainerData.Where(x => x.Value.Values.Any(y => y.ItemId == ItemId && y.Quantity > 0)).ToList().ForEach(x => retainerListSorted.TryAdd(x.Key, x.Value));
-
-                foreach (var retainer in retainerListSorted)
-                {
-                    TM.Enqueue(() => RetainerListHandlers.SelectRetainerByID(retainer.Key), 5000, true, "SelectRetainer");
-                    TM.DelayNext("WaitToSelectEntrust", 200);
-                    TM.Enqueue(() => RetainerHandlers.SelectEntrustItems());
-                    TM.DelayNext("EntrustSelected", 200);
-                    TM.Enqueue(() =>
-                    {
-                        ExtractSingular(ItemId, howManyToGet, retainer.Key);
-                    }, "ExtractSingularEntry");
-
-                    TM.DelayNext("CloseRetainer", 200);
-                    TM.Enqueue(() => RetainerHandlers.CloseAgentRetainer());
-                    TM.DelayNext("ClickQuit", 200);
-                    TM.Enqueue(() => RetainerHandlers.SelectQuit());
-                    TM.Enqueue(() =>
-                    {
-                        if (CraftingListUI.NumberOfIngredient(ItemId) >= howManyToGet)
-                        {
-                            TM.DelayNextImmediate("CloseRetainerList", 200);
-                            TM.EnqueueImmediate(() => RetainerListHandlers.CloseRetainerList());
-                            TM.EnqueueImmediate(() => YesAlready.Unlock());
-                            TM.EnqueueImmediate(() => AutoRetainerIPC.Unsuppress());
-                            TM.EnqueueImmediate(() => Svc.Framework.Update -= Tick);
-                            TM.EnqueueImmediate(() => TM.Abort());
-                        }
-                    });
-                }
-
-                TM.DelayNext("CloseRetainerList", 200);
-                TM.Enqueue(() => RetainerListHandlers.CloseRetainerList());
-                TM.Enqueue(() => YesAlready.Unlock());
-                TM.Enqueue(() => AutoRetainerIPC.Unsuppress());
-                TM.Enqueue(() => Svc.Framework.Update -= Tick);
+                return;
             }
+
+            // 精确取出：用共享的剩余计数，与整表补货相同的递减逻辑，
+            // 保证用户填多少就取多少（而不是“取到背包数量达到某个值”）。
+            var requiredItems = new Dictionary<int, int> { { (int)ItemId, howManyToGet } };
+            var retainerListSorted = RetainerData
+                .Where(x => x.Value.Values.Any(y => y.ItemId == ItemId && (y.Quantity > 0 || y.HQQuantity > 0)))
+                .ToDictionary(x => x.Key, x => x.Value);
+            if (retainerListSorted.Count == 0)
+            {
+                return;
+            }
+
+            TM.Enqueue(() => Svc.Framework.Update += Tick);
+            TM.Enqueue(() => AutoRetainerIPC.Suppress());
+            TM.EnqueueBell();
+            TM.DelayNext("BellInteracted", 200);
+
+            foreach (var retainer in retainerListSorted)
+            {
+                var retainerKey = retainer.Key;
+                TM.Enqueue(() => RetainerListHandlers.SelectRetainerByID(retainerKey), 5000, true, "SelectRetainer");
+                TM.DelayNext("WaitToSelectEntrust", 200);
+                TM.Enqueue(() => RetainerHandlers.SelectEntrustItems());
+                TM.DelayNext("EntrustSelected", 200);
+                TM.Enqueue(() => ExtractItem(requiredItems, new KeyValuePair<int, int>((int)ItemId, requiredItems[(int)ItemId]), retainerKey), "ExtractSingularEntry");
+
+                TM.DelayNext("CloseRetainer", 200);
+                TM.Enqueue(() => RetainerHandlers.CloseAgentRetainer());
+                TM.DelayNext("ClickQuit", 200);
+                TM.Enqueue(() => RetainerHandlers.SelectQuit());
+                TM.Enqueue(() =>
+                {
+                    if (requiredItems[(int)ItemId] <= 0)
+                    {
+                        TM.DelayNextImmediate("CloseRetainerList", 200);
+                        TM.EnqueueImmediate(() => RetainerListHandlers.CloseRetainerList());
+                        TM.EnqueueImmediate(() => YesAlready.Unlock());
+                        TM.EnqueueImmediate(() => AutoRetainerIPC.Unsuppress());
+                        TM.EnqueueImmediate(() => Svc.Framework.Update -= Tick);
+                        TM.EnqueueImmediate(() => TM.Abort());
+                    }
+                });
+            }
+
+            TM.DelayNext("CloseRetainerList", 200);
+            TM.Enqueue(() => RetainerListHandlers.CloseRetainerList());
+            TM.Enqueue(() => YesAlready.Unlock());
+            TM.Enqueue(() => AutoRetainerIPC.Unsuppress());
+            TM.Enqueue(() => Svc.Framework.Update -= Tick);
         }
 
         public static bool ExtractSingular(uint ItemId, int howManyToGet, ulong retainerKey)

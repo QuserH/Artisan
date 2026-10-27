@@ -96,6 +96,7 @@ public unsafe class Artisan : IDalamudPlugin
         });
 
         Svc.PluginInterface.UiBuilder.Draw += ws.Draw;
+        Svc.PluginInterface.UiBuilder.Draw += RetainerWithdrawPrompt.Draw;
         Svc.PluginInterface.UiBuilder.OpenConfigUi += DrawConfigUI;
         Svc.PluginInterface.UiBuilder.OpenMainUi += DrawConfigUI;
 
@@ -251,6 +252,7 @@ public unsafe class Artisan : IDalamudPlugin
         Svc.Commands.RemoveHandler(commandName);
         Svc.PluginInterface.UiBuilder.OpenConfigUi -= DrawConfigUI;
         Svc.PluginInterface.UiBuilder.Draw -= ws.Draw;
+        Svc.PluginInterface.UiBuilder.Draw -= RetainerWithdrawPrompt.Draw;
         Svc.PluginInterface.UiBuilder.OpenMainUi -= DrawConfigUI;
         cw?.Dispose();
         ri?.Dispose();

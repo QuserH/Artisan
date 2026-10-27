@@ -797,7 +797,7 @@ namespace Artisan.UI.Tables
                 var howManyToGet = item.Required - item.Inventory;
                 if (howManyToGet > 0)
                 {
-                    RetainerInfo.RestockFromRetainers(item.Data.RowId, howManyToGet);
+                    RetainerWithdrawPrompt.Request(item.Data.RowId, howManyToGet, item.RetainerCount);
                 }
             }
         }

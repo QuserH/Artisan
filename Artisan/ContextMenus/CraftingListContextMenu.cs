@@ -148,19 +148,22 @@ internal static class CraftingListContextMenu
             var ItemId = *(uint*)(recipeNoteAgent + 0x398);
             var craftTypeIndex = *(uint*)(recipeNoteAgent + 944);
 
-            if (RetainerInfo.GetRetainerItemCount(ItemId) > 0 && RetainerInfo.GetReachableRetainerBell() != null)
+            var retainerStock = RetainerInfo.GetRetainerItemCount(ItemId);
+            if (retainerStock > 0 && RetainerInfo.GetReachableRetainerBell() != null)
             {
-                int amountToGet = 1;
+                int defaultAmount = 1;
                 if (LuminaSheets.RecipeSheet[Endurance.RecipeID].ItemResult.RowId != ItemId)
                 {
-                    amountToGet = LuminaSheets.RecipeSheet[Endurance.RecipeID].Ingredients().First(y => y.Item.RowId == ItemId).Amount;
+                    var required = (int)LuminaSheets.RecipeSheet[Endurance.RecipeID].Ingredients().First(y => y.Item.RowId == ItemId).Amount;
+                    var missing = required - CraftingListUI.NumberOfIngredient(ItemId);
+                    defaultAmount = Math.Max(1, missing);
                 }
 
                 var menuItem = new MenuItem();
                 menuItem.Name = T("Withdraw from Retainer");
                 menuItem.PrefixChar = 'A';
                 menuItem.PrefixColor = 706;
-                menuItem.OnClicked += clickedArgs => RetainerInfo.RestockFromRetainers(ItemId, amountToGet);
+                menuItem.OnClicked += clickedArgs => RetainerWithdrawPrompt.Request(ItemId, defaultAmount, retainerStock);
 
                 args.AddMenuItem(menuItem);
             }
