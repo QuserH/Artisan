@@ -46,7 +46,7 @@ namespace Artisan.IPC
         {
             get
             {
-                return Svc.PluginInterface.InstalledPlugins.Any(x => x.InternalName is "Allagan Tools" or "InventoryTools");
+                return Svc.PluginInterface.InstalledPlugins.Any(x => x.InternalName is "Allagan Tools" or "InventoryTools" or "InventoryToolsZh");
             }
         }
 
@@ -54,7 +54,7 @@ namespace Artisan.IPC
         {
             get
             {
-                return AToolsInstalled && (DalamudReflector.TryGetDalamudPlugin("Allagan Tools", out var at, false, true) || DalamudReflector.TryGetDalamudPlugin("InventoryTools", out var it, false, true)) && _IsInitialized != null && _IsInitialized.InvokeFunc();
+                return AToolsInstalled && (DalamudReflector.TryGetDalamudPlugin("Allagan Tools", out var at, false, true) || DalamudReflector.TryGetDalamudPlugin("InventoryTools", out var it, false, true) || DalamudReflector.TryGetDalamudPlugin("InventoryToolsZh", out var itz, false, true)) && _IsInitialized != null && _IsInitialized.InvokeFunc();
             }
         }
 
